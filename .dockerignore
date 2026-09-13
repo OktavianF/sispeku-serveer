@@ -1,0 +1,40 @@
+# Virtual environments
+venv/
+venv_old/
+.venv/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Environment files (set via Railway dashboard)
+.env
+.env.*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+
+# SQL files (development only)
+schema.sql
+fix_policies.sql
+
+# Test files
+test_*.py
+tests/
+
+# Notebook
+model/*.ipynb
+
+# Docker
+Dockerfile
+.dockerignore
