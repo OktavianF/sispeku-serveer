@@ -24,6 +24,15 @@ FORMAT_TO_MIME = {
 
 def _convert_to_webp(img: Image.Image) -> bytes:
     """Convert a PIL Image to optimized WebP bytes while preserving visual quality."""
+    # Resize if too large to prevent Out of Memory (OOM) errors and timeouts
+    max_dim = 1920
+    if max(img.size) > max_dim:
+        ratio = max_dim / max(img.size)
+        new_size = (int(img.width * ratio), int(img.height * ratio))
+        # Use Image.Resampling.LANCZOS if available, else Image.LANCZOS
+        resample_filter = getattr(Image, "Resampling", Image).LANCZOS
+        img = img.resize(new_size, resample_filter)
+
     if img.mode in ("RGBA", "LA", "P"):
         converted = img.convert("RGBA")
     else:
@@ -34,7 +43,7 @@ def _convert_to_webp(img: Image.Image) -> bytes:
         output,
         format="WEBP",
         quality=92,
-        method=6,
+        method=4,  # Lower method reduces memory and CPU usage significantly
         optimize=True,
     )
     return output.getvalue()
