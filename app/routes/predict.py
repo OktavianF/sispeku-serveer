@@ -24,15 +24,6 @@ FORMAT_TO_MIME = {
 
 def _convert_to_webp(img: Image.Image) -> bytes:
     """Convert a PIL Image to optimized WebP bytes while preserving visual quality."""
-    # Resize if too large to prevent Out of Memory (OOM) errors and timeouts
-    max_dim = 1920
-    if max(img.size) > max_dim:
-        ratio = max_dim / max(img.size)
-        new_size = (int(img.width * ratio), int(img.height * ratio))
-        # Use Image.Resampling.LANCZOS if available, else Image.LANCZOS
-        resample_filter = getattr(Image, "Resampling", Image).LANCZOS
-        img = img.resize(new_size, resample_filter)
-
     if img.mode in ("RGBA", "LA", "P"):
         converted = img.convert("RGBA")
     else:
@@ -54,13 +45,7 @@ async def predict_defect(
     file: UploadFile = File(...),
     current_user: dict = Depends(get_current_user),
 ):
-    """Upload an image and get defect prediction.
-
-    Optimized pipeline:
-    1. Validate and decode image once
-    2. Run WebP conversion + model inference in parallel (off main thread)
-    3. Run storage upload + DB insert in parallel
-    """
+    """Upload an image and get defect prediction."""
     # Validate MIME type from client metadata
     if not file.content_type or file.content_type.lower() not in ALLOWED_MIME_TYPES:
         raise HTTPException(
@@ -101,11 +86,20 @@ async def predict_defect(
             detail="MIME type tidak cocok dengan isi file gambar.",
         )
 
-    # ── Parallel: WebP conversion + Model inference (CPU-bound → thread pool) ──
-    storage_bytes, result = await asyncio.gather(
-        asyncio.to_thread(_convert_to_webp, img),
-        asyncio.to_thread(predictor.predict_from_image, img),
-    )
+    # Resize if too large to prevent Out of Memory (OOM) errors and timeouts
+    max_dim = 1920
+    if max(img.size) > max_dim:
+        ratio = max_dim / max(img.size)
+        new_size = (int(img.width * ratio), int(img.height * ratio))
+        resample_filter = getattr(Image, "Resampling", Image).LANCZOS
+        img = img.resize(new_size, resample_filter)
+
+    # ── Sequential execution to prevent CPU/GIL contention and RAM spikes ──
+    # 1. Run Model inference
+    result = await asyncio.to_thread(predictor.predict_from_image, img)
+    
+    # 2. Run WebP conversion
+    storage_bytes = await asyncio.to_thread(_convert_to_webp, img)
 
     # ── Parallel: Storage upload + DB insert ──
     user_id = current_user["id"]

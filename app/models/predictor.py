@@ -22,6 +22,13 @@ try:
     from torchvision.models import efficientnet_b0
     from torchvision import transforms
     TORCH_AVAILABLE = True
+    
+    # CRITICAL FIX for Cloud Deployments (FastAPI Cloud, Heroku, Railway, etc.)
+    # Limit PyTorch to 1 CPU thread to prevent massive memory spikes (OOM Kills)
+    # caused by PyTorch allocating buffers for all available virtual CPU cores.
+    os.environ["OMP_NUM_THREADS"] = "1"
+    os.environ["MKL_NUM_THREADS"] = "1"
+    torch.set_num_threads(1)
 except ImportError:
     TORCH_AVAILABLE = False
     print("⚠️  PyTorch not installed. Running in DUMMY prediction mode.")
