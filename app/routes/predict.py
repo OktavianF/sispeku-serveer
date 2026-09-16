@@ -33,9 +33,9 @@ def _convert_to_webp(img: Image.Image) -> bytes:
     converted.save(
         output,
         format="WEBP",
-        quality=92,
-        method=4,  # Lower method reduces memory and CPU usage significantly
-        optimize=True,
+        quality=85,
+        method=1,  # Lowest method reduces memory usage significantly (prevents libwebp OOM)
+        optimize=False,
     )
     return output.getvalue()
 
@@ -87,12 +87,10 @@ async def predict_defect(
         )
 
     # Resize if too large to prevent Out of Memory (OOM) errors and timeouts
-    max_dim = 1920
+    max_dim = 1024
     if max(img.size) > max_dim:
-        ratio = max_dim / max(img.size)
-        new_size = (int(img.width * ratio), int(img.height * ratio))
-        resample_filter = getattr(Image, "Resampling", Image).LANCZOS
-        img = img.resize(new_size, resample_filter)
+        # thumbnail is highly optimized and modifies the image in-place
+        img.thumbnail((max_dim, max_dim), getattr(Image, "Resampling", Image).BILINEAR)
 
     # ── Sequential execution to prevent CPU/GIL contention and RAM spikes ──
     # 1. Run Model inference
