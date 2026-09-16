@@ -34,15 +34,19 @@ def _convert_to_webp(img: Image.Image) -> bytes:
     else:
         converted = img.convert("RGB")
 
-    output = io.BytesIO()
-    converted.save(
-        output,
-        format="WEBP",
-        quality=85,
-        method=1,  # Lowest method reduces memory usage significantly (prevents libwebp OOM)
-        optimize=False,
-    )
-    return output.getvalue()
+    try:
+        output = io.BytesIO()
+        converted.save(
+            output,
+            format="WEBP",
+            quality=85,
+            method=1,  # Lowest method reduces memory usage significantly (prevents libwebp OOM)
+            optimize=False,
+        )
+        return output.getvalue()
+    finally:
+        if converted is not img:
+            converted.close()
 
 
 @router.post("/predict", response_model=PredictionResponse)
@@ -72,50 +76,55 @@ async def predict_defect(
         )
 
     # ── Single decode: validate and produce PIL.Image ──
+    img = None
     async with prediction_lock:
+        img = None
         try:
-            img = Image.open(io.BytesIO(image_bytes))
-            detected_format = (img.format or "").upper()
-            # Force full decode to catch truncated files early
-            img.load()
-        except UnidentifiedImageError:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="File gambar tidak valid atau rusak.",
-            )
+            try:
+                img = Image.open(io.BytesIO(image_bytes))
+                detected_format = (img.format or "").upper()
+                # Force full decode to catch truncated files early
+                img.load()
+            except UnidentifiedImageError:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="File gambar tidak valid atau rusak.",
+                )
 
-        if detected_format not in ALLOWED_IMAGE_FORMATS:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Format file harus JPG, JPEG, PNG, atau WEBP.",
-            )
+            if detected_format not in ALLOWED_IMAGE_FORMATS:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Format file harus JPG, JPEG, PNG, atau WEBP.",
+                )
 
-        expected_mime = FORMAT_TO_MIME[detected_format]
-        if file.content_type.lower() not in {expected_mime, "image/jpg"}:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="MIME type tidak cocok dengan isi file gambar.",
-            )
+            expected_mime = FORMAT_TO_MIME[detected_format]
+            if file.content_type.lower() not in {expected_mime, "image/jpg"}:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="MIME type tidak cocok dengan isi file gambar.",
+                )
 
-        # Resize if too large to prevent Out of Memory (OOM) errors and timeouts
-        max_dim = 1024
-        if max(img.size) > max_dim:
-            # thumbnail is highly optimized and modifies the image in-place
-            img.thumbnail((max_dim, max_dim), getattr(Image, "Resampling", Image).BILINEAR)
+            # Resize if too large to prevent Out of Memory (OOM) errors and timeouts
+            max_dim = 1024
+            if img.size and max(img.size) > max_dim:
+                # thumbnail is highly optimized and modifies the image in-place
+                img.thumbnail((max_dim, max_dim), getattr(Image, "Resampling", Image).BILINEAR)
 
-        # ── Sequential execution to prevent CPU/GIL contention and RAM spikes ──
-        # 1. Run Model inference
-        result = await asyncio.to_thread(predictor.predict_from_image, img)
-        
-        # 2. Run WebP conversion
-        storage_bytes = await asyncio.to_thread(_convert_to_webp, img)
-
-        # Explicitly close the image and force garbage collection to prevent memory leaks
-        try:
-            img.close()
-        except Exception:
-            pass
-        gc.collect()
+            # ── Sequential execution to prevent CPU/GIL contention and RAM spikes ──
+            # 1. Run Model inference
+            result = await asyncio.to_thread(predictor.predict_from_image, img)
+            
+            # 2. Run WebP conversion
+            storage_bytes = await asyncio.to_thread(_convert_to_webp, img)
+        finally:
+            # ── GUARANTEED CLEANUP ──
+            # Explicitly close the image and force garbage collection to prevent memory leaks
+            if img is not None:
+                try:
+                    img.close()
+                except Exception:
+                    pass
+            gc.collect()
 
     # ── Parallel: Storage upload + DB insert ──
     user_id = current_user["id"]

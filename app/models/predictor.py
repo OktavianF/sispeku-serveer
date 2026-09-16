@@ -164,7 +164,11 @@ class SkinDefectPredictor:
 
         try:
             rgb_image = image.convert("RGB") if image.mode != "RGB" else image
-            tensor = self.transform(rgb_image).unsqueeze(0).to(self.device)
+            try:
+                tensor = self.transform(rgb_image).unsqueeze(0).to(self.device)
+            finally:
+                if rgb_image is not image:
+                    rgb_image.close()
 
             with torch.no_grad():
                 outputs = self.model(tensor)
