@@ -125,6 +125,13 @@ async def predict_defect(
                 except Exception:
                     pass
             gc.collect()
+            
+            # Force glibc to return freed memory to the OS (prevents Docker OOM kills)
+            try:
+                import ctypes
+                ctypes.CDLL("libc.so.6").malloc_trim(0)
+            except Exception:
+                pass
 
     # ── Parallel: Storage upload + DB insert ──
     user_id = current_user["id"]

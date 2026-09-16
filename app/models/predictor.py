@@ -93,6 +93,16 @@ class SkinDefectPredictor:
                 transforms.Normalize(IMAGENET_MEAN, IMAGENET_STD),
             ])
 
+            # CLEANUP to reduce base memory footprint
+            del checkpoint
+            import gc
+            gc.collect()
+            try:
+                import ctypes
+                ctypes.CDLL("libc.so.6").malloc_trim(0)
+            except Exception:
+                pass
+
             self.is_loaded = True
             print(f"✅ Model loaded successfully from {model_path}")
             print(f"   Device: {self.device}")
