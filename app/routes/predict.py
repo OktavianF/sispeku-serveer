@@ -4,6 +4,7 @@ import asyncio
 from datetime import datetime
 from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, status
 from PIL import Image, UnidentifiedImageError
+import gc
 
 from app.auth import get_current_user
 from app.database import supabase
@@ -171,6 +172,13 @@ async def predict_defect(
             image_url = signed.get("signedURL", "")
         except Exception:
             image_url = ""
+
+    # Explicitly close the image and force garbage collection to prevent memory leaks
+    try:
+        img.close()
+    except Exception:
+        pass
+    gc.collect()
 
     return PredictionResponse(
         id=scan_id,
