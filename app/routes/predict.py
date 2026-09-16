@@ -13,6 +13,10 @@ from app.schemas import PredictionResponse
 
 router = APIRouter(prefix="/api", tags=["Prediction"])
 
+# Global lock to prevent concurrent inferences on memory-constrained servers
+# This forces requests to queue up instead of crashing the server via OOM/CPU thrashing.
+prediction_lock = asyncio.Lock()
+
 MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024
 ALLOWED_MIME_TYPES = {"image/jpeg", "image/jpg", "image/png", "image/webp"}
 ALLOWED_IMAGE_FORMATS = {"JPEG", "PNG", "WEBP"}
@@ -61,44 +65,57 @@ async def predict_defect(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Ukuran file maksimal 5MB.",
         )
+    if len(image_bytes) == 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="File kosong.",
+        )
 
     # ── Single decode: validate and produce PIL.Image ──
-    try:
-        img = Image.open(io.BytesIO(image_bytes))
-        detected_format = (img.format or "").upper()
-        # Force full decode to catch truncated files early
-        img.load()
-    except UnidentifiedImageError:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="File gambar tidak valid atau rusak.",
-        )
+    async with prediction_lock:
+        try:
+            img = Image.open(io.BytesIO(image_bytes))
+            detected_format = (img.format or "").upper()
+            # Force full decode to catch truncated files early
+            img.load()
+        except UnidentifiedImageError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="File gambar tidak valid atau rusak.",
+            )
 
-    if detected_format not in ALLOWED_IMAGE_FORMATS:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Format file harus JPG, JPEG, PNG, atau WEBP.",
-        )
+        if detected_format not in ALLOWED_IMAGE_FORMATS:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Format file harus JPG, JPEG, PNG, atau WEBP.",
+            )
 
-    expected_mime = FORMAT_TO_MIME[detected_format]
-    if file.content_type.lower() not in {expected_mime, "image/jpg"}:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="MIME type tidak cocok dengan isi file gambar.",
-        )
+        expected_mime = FORMAT_TO_MIME[detected_format]
+        if file.content_type.lower() not in {expected_mime, "image/jpg"}:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="MIME type tidak cocok dengan isi file gambar.",
+            )
 
-    # Resize if too large to prevent Out of Memory (OOM) errors and timeouts
-    max_dim = 1024
-    if max(img.size) > max_dim:
-        # thumbnail is highly optimized and modifies the image in-place
-        img.thumbnail((max_dim, max_dim), getattr(Image, "Resampling", Image).BILINEAR)
+        # Resize if too large to prevent Out of Memory (OOM) errors and timeouts
+        max_dim = 1024
+        if max(img.size) > max_dim:
+            # thumbnail is highly optimized and modifies the image in-place
+            img.thumbnail((max_dim, max_dim), getattr(Image, "Resampling", Image).BILINEAR)
 
-    # ── Sequential execution to prevent CPU/GIL contention and RAM spikes ──
-    # 1. Run Model inference
-    result = await asyncio.to_thread(predictor.predict_from_image, img)
-    
-    # 2. Run WebP conversion
-    storage_bytes = await asyncio.to_thread(_convert_to_webp, img)
+        # ── Sequential execution to prevent CPU/GIL contention and RAM spikes ──
+        # 1. Run Model inference
+        result = await asyncio.to_thread(predictor.predict_from_image, img)
+        
+        # 2. Run WebP conversion
+        storage_bytes = await asyncio.to_thread(_convert_to_webp, img)
+
+        # Explicitly close the image and force garbage collection to prevent memory leaks
+        try:
+            img.close()
+        except Exception:
+            pass
+        gc.collect()
 
     # ── Parallel: Storage upload + DB insert ──
     user_id = current_user["id"]
@@ -172,13 +189,6 @@ async def predict_defect(
             image_url = signed.get("signedURL", "")
         except Exception:
             image_url = ""
-
-    # Explicitly close the image and force garbage collection to prevent memory leaks
-    try:
-        img.close()
-    except Exception:
-        pass
-    gc.collect()
 
     return PredictionResponse(
         id=scan_id,
